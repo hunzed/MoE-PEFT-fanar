@@ -77,6 +77,9 @@ class TrainConfig(DispatcherConfig):
     def _dataload_fn(self, tokenizer: Tokenizer, **tokenizer_kwargs):
         prompter = None
         data = self.task_.loading_data(True, self.data_path)
+        
+        logging.info(f"[TOKENIZATION] Starting tokenization for {self.adapter_name} with {len(data)} examples")
+        
         for idx, data_point in enumerate(data):
             if isinstance(data_point.inputs, Prompt):
                 if prompter is None:
@@ -87,10 +90,27 @@ class TrainConfig(DispatcherConfig):
                     label=data_point.inputs.label,
                 )
 
+            # Log detailed tokenization for first example only
+            if idx == 0:
+                logging.info(f"\n{'='*60}")
+                logging.info(f"[TOKENIZATION] FIRST EXAMPLE - Adapter: {self.adapter_name}")
+                logging.info(f"{'='*60}")
+                logging.info(f"Input text (length={len(data_point.inputs)}):")
+                logging.info(f"{data_point.inputs}")
+                logging.info(f"\nTokenizing with kwargs: {tokenizer_kwargs}")
+            
             data_point.tokens = tokenizer.encode(data_point.inputs, **tokenizer_kwargs)
+            
+            if idx == 0:
+                logging.info(f"Tokenized result:")
+                logging.info(f"  Token count: {len(data_point.tokens)}")
+                logging.info(f"  Token IDs: {data_point.tokens}")
+                logging.info(f"{'='*60}\n")
+            
             if idx % 10000 == 0:
                 logging.info(f"Encode text data: {idx}/{len(data)}")
 
+        logging.info(f"[TOKENIZATION] Completed tokenization for {self.adapter_name}")
         return data
 
     def dispatcher_context(self) -> Dict[str, any]:
@@ -204,6 +224,13 @@ class TrainConfig(DispatcherConfig):
 
     def step(self):
         self.training_steps_ += 1
+        
+        # Log tokenization info every 100 steps
+        if self.training_steps_ % 100 == 0:
+            logging.info(f"[TRAINING] Step {self.training_steps_} - Adapter: {self.adapter_name}")
+            logging.info(f"[TRAINING] Using Fanar tokenizer with chat template format")
+            logging.info(f"[TRAINING] Learning to predict Arabic MCQ answers")
+        
         if self.training_steps_ % self.accumulation_step_ == 0:
             self.optimizer_.step()
             self.lr_scheduler_.step()

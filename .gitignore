@@ -175,3 +175,5 @@ moe_peft_train_*.json
 # PEFT adapters
 adapter_model.bin
 adapter_config.json
+
+configs/

@@ -128,7 +128,16 @@ def _dispatch_task_in(tokenizer, configs, concurrent_jobs, max_seq_len):
                 tokens = tokens[:max_seq_len]
             max_tokens_len = max(len(tokens), max_tokens_len)
             batch_tokens.append(tokens)
-            batch_labels.append(labels.copy())
+            # Handle None labels by copying tokens (similar to dispatcher.py)
+            # This must be done after potential token truncation
+            if labels is None:
+                labels = tokens.copy()
+            else:
+                labels = labels.copy()
+                # If tokens were truncated, also truncate labels to match
+                if len(labels) > len(tokens):
+                    labels = labels[:len(tokens)]
+            batch_labels.append(labels)
 
         config.batch_start_idx_ = config.batch_end_idx_
         current_configs.append(config)
@@ -142,10 +151,25 @@ def _dispatch_task_in(tokenizer, configs, concurrent_jobs, max_seq_len):
 
     max_seq_len = min(max_seq_len, max_tokens_len)
 
-    for tokens in batch_tokens:
+    # Ensure both tokens and labels are consistently padded/truncated
+    for i, (tokens, labels) in enumerate(zip(batch_tokens, batch_labels)):
         sequence_lengths.append(len(tokens) - 1)
+        
+        # Pad tokens to max_seq_len
         while len(tokens) < max_seq_len:
             tokens.append(tokenizer.pad_id_)
+        
+        # Ensure labels match the token length exactly
+        if len(labels) > len(tokens):
+            labels = labels[:len(tokens)]
+        elif len(labels) < len(tokens):
+            # Pad labels with the same padding token
+            while len(labels) < len(tokens):
+                labels.append(tokenizer.pad_id_)
+        
+        # Update the labels in the batch
+        batch_labels[i] = labels
+        
         atten_masks.append(tokenizer.mask_from(tokens))
 
     return (
