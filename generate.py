@@ -20,10 +20,24 @@ def main(
     load_8bit: bool = False,
     load_4bit: bool = False,
     flash_attn: bool = False,
-    max_seq_len: int = None,
+    max_seq_len: int = 512,
     stream: bool = False,
     device: str = moe_peft.backend.default_device_name(),
 ):
+    # Validate device parameter to prevent Arabic characters or invalid device names
+    valid_devices = ["cpu", "cuda", "auto", "balanced", "balanced_low_0", "sequential"]
+    if device and not any(device.startswith(d) for d in valid_devices):
+        print(f"Warning: Invalid device '{device}' detected (contains non-ASCII characters). Using default device instead.")
+        device = moe_peft.backend.default_device_name()
+    
+    # Additional check for non-ASCII characters
+    try:
+        device.encode('ascii')
+    except UnicodeEncodeError:
+        print(f"Warning: Device name contains non-ASCII characters: '{device}'. Using default device instead.")
+        device = moe_peft.backend.default_device_name()
+    
+    print(f"Using device: {device}")
 
     model = moe_peft.LLMModel.from_pretrained(
         base_model,

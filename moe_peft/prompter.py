@@ -6,9 +6,9 @@ from typing import Dict, Optional, Union
 prompt_templates = {
     "moe_peft": {
         "description": "Default Prompt Template Provided by MoE-PEFT",
-        "prompt_input": "### Instruction:\n{instruction}\n\n### Input:\n{input}\n\n### Output:\n",
-        "prompt_no_input": "### Instruction:\n{instruction}\n\n### Output:\n",
-        "response_split": "### Output:",
+        "prompt_input": "{input}\n الجواب: :\n",
+        # "prompt_no_input": "### Instruction:\n{instruction}\n\n### Output:\n",
+        "response_split": "الجواب: :",
     },
     "alpaca": {
         "description": "Template used by Alpaca-LoRA.",
@@ -57,7 +57,10 @@ class Prompter:
         if label:
             res = f"{res}{label}\n"
         logging.debug(res)
+        print(f"Generated prompt: {res}")
+
         return res
 
     def get_response(self, output: str) -> str:
-        return output.split(self.template["response_split"])[-1].strip()
+        parts = output.split(self.template["response_split"])
+        return parts[1] if len(parts) > 1 else parts[0]
