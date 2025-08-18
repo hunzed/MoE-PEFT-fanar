@@ -93,7 +93,7 @@ class ArabicFinetuneManager:
             config["lora"][0]["top_k"] = top_k
         
         # Add evaluation configuration
-        if evaluate_steps > 0:
+        if evaluate_steps and evaluate_steps > 0:
             config["lora"][0]["evaluate_steps"] = evaluate_steps
             config["lora"][0]["evaluate"] = [
                 {
@@ -198,6 +198,7 @@ def main():
     parser.add_argument("--evaluate_steps", type=int, default=100, help="Evaluate every N steps")
     parser.add_argument("--config_only", action="store_true", help="Only create config file, don't run training")
     parser.add_argument("--config_path", type=str, help="Path to save/load config file")
+    parser.add_argument("--use_config", type=str, help="Path to existing config file to use for training (skips config creation)")
     parser.add_argument("--output_dir", type=str, help="Output directory for training results")
     parser.add_argument("--log_file", type=str, help="Log file path")
     parser.add_argument("--device", type=str, help="Device to use for training")
@@ -209,35 +210,57 @@ def main():
     
     manager = ArabicFinetuneManager()
     
-    # Create config
-    config = manager.create_config(
-        name=args.name,
-        task_name=args.task,
-        dataset=args.dataset,
-        routing_strategy=args.routing,
-        num_experts=args.experts,
-        top_k=args.top_k,
-        num_epochs=args.epochs,
-        batch_size=args.batch_size,
-        micro_batch_size=args.micro_batch_size,
-        learning_rate=args.lr,
-        r=args.r,
-        lora_alpha=args.lora_alpha,
-        lora_dropout=args.lora_dropout,
-        cutoff_len=args.cutoff_len,
-        warmup_ratio=args.warmup_ratio,
-        save_step=args.save_step,
-        evaluate_steps=args.evaluate_steps,
-    )
-    
-    # Save config
-    if args.config_path:
-        config_path = args.config_path
+    # Check if using existing config file
+    if args.use_config:
+        config_path = args.use_config
+        
+        # Verify config file exists
+        if not os.path.exists(config_path):
+            print(f"Error: Config file not found: {config_path}")
+            sys.exit(1)
+        
+        # Load and validate config
+        try:
+            with open(config_path, 'r', encoding='utf-8') as f:
+                config = json.load(f)
+            print(f"Using existing config file: {config_path}")
+        except json.JSONDecodeError as e:
+            print(f"Error: Invalid JSON in config file: {e}")
+            sys.exit(1)
+        except Exception as e:
+            print(f"Error loading config file: {e}")
+            sys.exit(1)
+            
     else:
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        config_path = f"configs/arabic_{args.routing}_{timestamp}.json"
-    
-    manager.save_config(config, config_path)
+        # Create new config
+        config = manager.create_config(
+            name=args.name,
+            task_name=args.task,
+            dataset=args.dataset,
+            routing_strategy=args.routing,
+            num_experts=args.experts,
+            top_k=args.top_k,
+            num_epochs=args.epochs,
+            batch_size=args.batch_size,
+            micro_batch_size=args.micro_batch_size,
+            learning_rate=args.lr,
+            r=args.r,
+            lora_alpha=args.lora_alpha,
+            lora_dropout=args.lora_dropout,
+            cutoff_len=args.cutoff_len,
+            warmup_ratio=args.warmup_ratio,
+            save_step=args.save_step,
+            evaluate_steps=args.evaluate_steps,
+        )
+        
+        # Save config
+        if args.config_path:
+            config_path = args.config_path
+        else:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            config_path = f"configs/arabic_{args.routing}_{timestamp}.json"
+        
+        manager.save_config(config, config_path)
     
     if args.config_only:
         print("Configuration file created successfully!")
