@@ -64,10 +64,7 @@ class ArabicFinetuneManager:
     def get_template_key(self, routing_strategy: str, model: str = "fanar") -> str:
         """Get the best template key based on routing strategy and model"""
         
-        # Special case for Arabic Fanar MixLoRA
-        if routing_strategy == "mixlora" and model == "fanar":
-            if "arabic_fanar_mixlora" in self.template_mapping:
-                return "arabic_fanar_mixlora"
+
         
         # Try model-specific template first
         model_specific_key = f"{routing_strategy}_{model}"
