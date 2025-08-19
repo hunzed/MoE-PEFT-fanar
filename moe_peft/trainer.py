@@ -8,6 +8,12 @@ from typing import Dict, List, Optional, Union
 import torch
 from transformers import get_scheduler
 
+try:
+    import wandb
+    WANDB_AVAILABLE = True
+except ImportError:
+    WANDB_AVAILABLE = False
+
 from .backends import no_cache
 from .dispatcher import Dispatcher, DispatcherConfig, TrainTask
 from .evaluator import EvaluateConfig, evaluate
@@ -262,25 +268,33 @@ def save_adapter_weight(model: LLMModel, config: TrainConfig, path: str, dir_suf
 
 def _compute_loss(config_dict: Dict[str, TrainConfig], outputs: List[LLMModelOutput]):
     total_loss = None
+    loss_dict = {}
+    
     for output in outputs:
         adapter_name = output.adapter_name
         loss = output.loss / config_dict[adapter_name].accumulation_step_
         logging.info(f"    adapter: {adapter_name} loss: {loss}")
+        loss_dict[f"{adapter_name}/loss"] = loss.item()
+        
         if output.aux_loss:
             aux_loss = output.aux_loss / config_dict[adapter_name].accumulation_step_
             logging.info(f"    adapter: {adapter_name}  aux: {aux_loss}")
+            loss_dict[f"{adapter_name}/aux_loss"] = aux_loss.item()
             loss += aux_loss
+        
         if total_loss is None:
             total_loss = loss
         else:
             total_loss += loss
-
-    return total_loss
+    
+    loss_dict["total_loss"] = total_loss.item()
+    return total_loss, loss_dict
 
 
 def _perform_evaluate(
     train_configs: Dict[str, TrainConfig],
     evaluate_configs: List[EvaluateConfig],
+    wandb_initialized: bool = False,
     **kwargs,
 ):
     if len(evaluate_configs) > 0:
@@ -288,6 +302,26 @@ def _perform_evaluate(
             results = evaluate(configs=evaluate_configs, **kwargs)
     else:
         results = []
+
+    # Log evaluation metrics to wandb if initialized
+    if wandb_initialized and len(results) > 0:
+        try:
+            eval_metrics = {}
+            for dic in results:
+                adapter_name = dic.get("adapter_name", "unknown")
+                training_steps = dic.get("training_steps", 0)
+                
+                for key, value in dic.items():
+                    if key not in ["adapter_name", "training_steps"] and isinstance(value, (int, float)):
+                        eval_metrics[f"eval/{adapter_name}/{key}"] = value
+                
+                # Add training step info
+                eval_metrics[f"eval/{adapter_name}/training_steps"] = training_steps
+            
+            if eval_metrics:
+                wandb.log(eval_metrics)
+        except Exception as e:
+            logging.warning(f"Failed to log evaluation metrics to wandb: {e}")
 
     for dic in results:
         adapter_name = dic["adapter_name"]
@@ -316,6 +350,48 @@ def train(
             f"instead of `{model.config_.attn_implementation_}`."
         )
 
+    # Initialize wandb if available and environment variables are set
+    wandb_initialized = False
+    if WANDB_AVAILABLE and os.getenv("WANDB_PROJECT") and not os.getenv("WANDB_DISABLED"):
+        try:
+            wandb_config = {
+                "model_name": model.name_or_path_,
+                "strategy": strategy,
+                "cutoff_len": cutoff_len,
+                "save_step": save_step,
+                "max_concurrent_jobs": max_concurrent_jobs,
+            }
+            
+            # Add config details for each adapter
+            for config in configs:
+                prefix = f"{config.adapter_name}_"
+                wandb_config.update({
+                    f"{prefix}num_epochs": config.num_epochs,
+                    f"{prefix}batch_size": config.batch_size,
+                    f"{prefix}micro_batch_size": config.micro_batch_size,
+                    f"{prefix}learning_rate": config.learning_rate,
+                    f"{prefix}optimizer_type": config.optimizer_type,
+                    f"{prefix}scheduler_type": config.scheduler_type,
+                    f"{prefix}warmup_ratio": config.warmup_ratio,
+                    f"{prefix}weight_decay": config.weight_decay,
+                    f"{prefix}task_name": config.task_name,
+                })
+            
+            wandb.init(
+                project=os.getenv("WANDB_PROJECT"),
+                name=os.getenv("WANDB_NAME"),
+                tags=os.getenv("WANDB_TAGS", "").split(",") if os.getenv("WANDB_TAGS") else None,
+                config=wandb_config,
+            )
+            wandb_initialized = True
+            logging.info("Wandb initialized successfully")
+        except Exception as e:
+            logging.warning(f"Failed to initialize wandb: {e}")
+    elif not WANDB_AVAILABLE:
+        logging.info("Wandb not available - install with: pip install wandb")
+    elif not os.getenv("WANDB_PROJECT"):
+        logging.info("Wandb not initialized - no WANDB_PROJECT environment variable set")
+
     dispatcher = Dispatcher(
         tokenizer, configs, max_concurrent_jobs, strategy, cutoff_len
     )
@@ -340,15 +416,23 @@ def train(
 
         outputs = model.forward(input_args)
 
-        total_loss = _compute_loss(config_dict, outputs)
+        total_loss, loss_dict = _compute_loss(config_dict, outputs)
 
         total_loss.backward()
 
         evaluate_configs = []
+        
+        # Collect training metrics for wandb
+        training_metrics = {}
+        training_metrics.update(loss_dict)
 
         for output in outputs:
             config = config_dict[output.adapter_name]
             config.step()
+            
+            # Add per-adapter training step to metrics
+            training_metrics[f"{output.adapter_name}/training_steps"] = config.training_steps_
+            training_metrics[f"{output.adapter_name}/learning_rate"] = config.optimizer_.param_groups[0]['lr']
 
             if save_step is not None and config.training_steps_ % save_step == 0:
                 save_adapter_weight(
@@ -361,10 +445,18 @@ def train(
             ):
                 evaluate_configs.extend(config.evaluate_configs_)
 
+        # Log to wandb if initialized
+        if wandb_initialized:
+            try:
+                wandb.log(training_metrics)
+            except Exception as e:
+                logging.warning(f"Failed to log to wandb: {e}")
+
         evaluate_results.extend(
             _perform_evaluate(
                 train_configs=config_dict,
                 evaluate_configs=evaluate_configs,
+                wandb_initialized=wandb_initialized,
                 model=model,
                 tokenizer=tokenizer,
                 max_concurrent_jobs=max_concurrent_jobs,
@@ -384,12 +476,29 @@ def train(
         _perform_evaluate(
             train_configs=config_dict,
             evaluate_configs=evaluate_configs,
+            wandb_initialized=wandb_initialized,
             model=model,
             tokenizer=tokenizer,
             max_concurrent_jobs=max_concurrent_jobs,
             max_seq_len=cutoff_len,
         )
     )
+    
+    # Log final evaluation results to wandb
+    if wandb_initialized and len(evaluate_results) > 0:
+        try:
+            final_metrics = {}
+            for result in evaluate_results:
+                adapter_name = result.get("adapter_name", "unknown")
+                for key, value in result.items():
+                    if key != "adapter_name" and isinstance(value, (int, float)):
+                        final_metrics[f"final_eval/{adapter_name}/{key}"] = value
+            
+            if final_metrics:
+                wandb.log(final_metrics)
+                logging.info("Final evaluation results logged to wandb")
+        except Exception as e:
+            logging.warning(f"Failed to log final evaluation to wandb: {e}")
 
     if len(evaluate_results) > 0:
         if save_dir is not None:
@@ -399,3 +508,11 @@ def train(
             logging.info(f"saving evaluation result to {save_file}")
         else:
             print(json.dumps(evaluate_results, indent=4))
+    
+    # Finish wandb logging
+    if wandb_initialized:
+        try:
+            wandb.finish()
+            logging.info("Wandb logging finished")
+        except Exception as e:
+            logging.warning(f"Failed to finish wandb: {e}")

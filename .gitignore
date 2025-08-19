@@ -177,3 +177,6 @@ adapter_model.bin
 adapter_config.json
 
 configs/
+wandb/
+outputs/
+datasets/

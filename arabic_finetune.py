@@ -7,10 +7,11 @@ Provides an easy interface to fine-tune Arabic models with configurable paramete
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
 from datetime import datetime
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 
 class ArabicFinetuneManager:
@@ -23,95 +24,206 @@ class ArabicFinetuneManager:
         
         self.datasets = {
             "palmx_culture": "UBC-NLP/palmx_2025_subtask1_culture",
+            "palmx_ext": "./datasets/palmX-ext.jsonl",
+            "palm_train": "./datasets/palm_train.jsonl",
+            "all_datasets": "UBC-NLP/palmx_2025_subtask1_culture:train;./datasets/palmX-ext.jsonl;./datasets/palm_train.jsonl",
         }
         
-        self.routing_strategies = ["mixlora", "loramoe", "lora"]
+        self.routing_strategies = ["mixlora", "loramoe", "lora", "mixlora_dynamic", "mola"]
+        
+        # Template mapping for routing strategies and models
+        self.template_mapping = {
+            # Basic templates (default for any model)
+            "mixlora": "mixlora.json",
+            "loramoe": "loramoe.json", 
+            "lora": "lora.json",
+            "mixlora_dynamic": "mixlora_dynamic.json",
+            "mola": "mola.json",
+            
+            # Model-specific templates
+            "mixlora_glm": "mixlora_glm.json",
+            "mixlora_phi": "mixlora_phi.json", 
+            "mixlora_phi3": "mixlora_phi3.json",
+            "mixlora_dynamic_glm": "mixlora_dynamic_glm.json",
+            "mixlora_dynamic_phi": "mixlora_dynamic_phi.json",
+            "mixlora_dynamic_phi3": "mixlora_dynamic_phi3.json",
+            "loramoe_glm": "loramoe_glm.json",
+            "loramoe_phi": "loramoe_phi.json",
+            "loramoe_phi3": "loramoe_phi3.json",
+            "lora_glm": "lora_glm.json",
+            "lora_phi": "lora_phi.json",
+            "lora_phi3": "lora_phi3.json",
+            "mola_glm": "mola_glm.json", 
+            "mola_phi": "mola_phi.json",
+            "mola_phi3": "mola_phi3.json",
+            
+            # Special Arabic template
+            "arabic_fanar_mixlora": "arabic_fanar_mixlora.json"
+        }
+    
+    def get_template_key(self, routing_strategy: str, model: str = "fanar") -> str:
+        """Get the best template key based on routing strategy and model"""
+        
+        # Special case for Arabic Fanar MixLoRA
+        if routing_strategy == "mixlora" and model == "fanar":
+            if "arabic_fanar_mixlora" in self.template_mapping:
+                return "arabic_fanar_mixlora"
+        
+        # Try model-specific template first
+        model_specific_key = f"{routing_strategy}_{model}"
+        if model_specific_key in self.template_mapping:
+            return model_specific_key
+        
+        # Fall back to basic routing strategy template
+        if routing_strategy in self.template_mapping:
+            return routing_strategy
+        
+        raise ValueError(f"No template found for routing strategy: {routing_strategy}")
+    
+    def load_template(self, routing_strategy: str, model: str = "fanar") -> Dict[str, Any]:
+        """Load the appropriate template configuration"""
+        template_key = self.get_template_key(routing_strategy, model)
+        template_file = self.template_mapping[template_key]
+        
+        template_path = os.path.join("templates", template_file)
+        if not os.path.exists(template_path):
+            raise FileNotFoundError(f"Template file not found: {template_path}")
+        
+        with open(template_path, 'r', encoding='utf-8') as f:
+            template_config = json.load(f)
+        
+        return template_config
     
     def create_config(
         self,
         name: str,
         task_name: str = "palmx_culture",
-        dataset: str = "UBC-NLP/palmx_2025_subtask1_culture",
+        dataset: str = None,  # Changed to None to allow auto-detection
         model: str = "fanar",
         routing_strategy: str = "mixlora",
-        num_experts: int = 8,
-        top_k: int = 2,
-        num_epochs: int = 3,
-        batch_size: int = 8,
-        micro_batch_size: int = 4,
-        learning_rate: float = 2e-4,
-        r: int = 16,
-        lora_alpha: int = 32,
-        lora_dropout: float = 0.05,
-        cutoff_len: int = 512,
-        warmup_ratio: float = 0.1,
-        save_step: int = 500,
-        evaluate_steps: int = 100,
+        num_experts: Optional[int] = None,
+        top_k: Optional[int] = None,
+        num_epochs: Optional[int] = None,
+        batch_size: Optional[int] = None,
+        micro_batch_size: Optional[int] = None,
+        learning_rate: Optional[float] = None,
+        r: Optional[int] = None,
+        lora_alpha: Optional[int] = None,
+        lora_dropout: Optional[float] = None,
+        cutoff_len: Optional[int] = None,
+        warmup_ratio: Optional[float] = None,
+        save_step: Optional[int] = None,
+        evaluate_steps: Optional[int] = None,
     ) -> Dict[str, Any]:
-        """Create a configuration dictionary for Arabic fine-tuning"""
+        """Create a configuration dictionary for Arabic fine-tuning using template as base"""
         
-        config = {
-            "cutoff_len": cutoff_len,
-            "save_step": save_step,
-            "train_lora_candidate_num": 2,
-            "train_lora_simultaneously_num": 2,
-            "train_strategy": "optim",
-            "lora": [
+        # Auto-detect dataset if not provided
+        if dataset is None:
+            if task_name in self.datasets:
+                dataset = self.datasets[task_name]
+            else:
+                # Default fallback
+                dataset = self.datasets["palmx_culture"]
+        
+        # Load the base template (this gives us all the defaults)
+        config = self.load_template(routing_strategy, model)
+        
+        # Override global settings only if explicitly provided
+        if cutoff_len is not None:
+            config["cutoff_len"] = cutoff_len
+        if save_step is not None:
+            config["save_step"] = save_step
+        
+        # Override LoRA-specific settings
+        lora_config = config["lora"][0]
+        
+        # Always override these (required for Arabic fine-tuning)
+        lora_config["name"] = name
+        lora_config["task_name"] = task_name
+        
+        # Handle dataset path - multiple datasets use semicolon separation
+        if isinstance(dataset, list):
+            # Convert list to semicolon-separated string (shouldn't happen with new implementation but kept for safety)
+            lora_config["data"] = ";".join(dataset)
+        elif ";" in dataset:
+            # Multiple datasets already in proper format
+            lora_config["data"] = dataset
+        elif dataset.startswith("./") or os.path.isabs(dataset):
+            # Local file - no need for :train suffix
+            lora_config["data"] = dataset
+        else:
+            # HuggingFace dataset - add :train suffix
+            lora_config["data"] = f"{dataset}:train"
+        
+        # Override only explicitly provided parameters (leave template defaults otherwise)
+        if num_epochs is not None:
+            lora_config["num_epochs"] = num_epochs
+        if batch_size is not None:
+            lora_config["batch_size"] = batch_size
+            lora_config["evaluate_batch_size"] = batch_size  # Keep them in sync
+        if micro_batch_size is not None:
+            lora_config["micro_batch_size"] = micro_batch_size
+        if learning_rate is not None:
+            lora_config["lr"] = learning_rate
+        if r is not None:
+            lora_config["r"] = r
+        if lora_alpha is not None:
+            lora_config["lora_alpha"] = lora_alpha
+        if lora_dropout is not None:
+            lora_config["lora_dropout"] = lora_dropout
+        if warmup_ratio is not None:
+            # Use warmup_ratio if provided, otherwise keep template's warmup settings
+            lora_config["warmup_ratio"] = warmup_ratio
+            # Remove warmup_steps if warmup_ratio is set
+            if "warmup_steps" in lora_config:
+                del lora_config["warmup_steps"]
+            # Set scheduler_type to linear for warmup_ratio
+            lora_config["scheduler_type"] = "linear"
+        
+        # Handle expert configuration for MixLoRA and LoRAMoE (only override if provided)
+        if routing_strategy in ["mixlora", "loramoe", "mixlora_dynamic", "mola"]:
+            if num_experts is not None:
+                lora_config["num_experts"] = num_experts
+            if top_k is not None:
+                lora_config["top_k"] = top_k
+        
+        # Handle evaluation configuration
+        if evaluate_steps is not None and evaluate_steps > 0:
+            lora_config["evaluate_steps"] = evaluate_steps
+            
+            # For evaluation, always use the original PalmX dataset with :eval split
+            # Local datasets and combined datasets use original PalmX for evaluation
+            if isinstance(dataset, list) or ";" in dataset or dataset.startswith("./") or os.path.isabs(dataset):
+                # Multiple datasets or local files - use original PalmX dataset for evaluation
+                eval_data = f"{self.datasets['palmx_culture']}:eval"
+            else:
+                # Single HuggingFace dataset - add :eval suffix
+                eval_data = f"{dataset}:eval"
+            
+            lora_config["evaluate"] = [
                 {
                     "name": name,
                     "task_name": task_name,
-                    "data": f"{dataset}:train",
-                    "optim": "adamw",
-                    "scheduler_type": "linear",
-                    "warmup_ratio": warmup_ratio,
-                    "lr": learning_rate,
-                    "batch_size": batch_size,
-                    "micro_batch_size": micro_batch_size,
-                    "evaluate_batch_size": batch_size,
-                    "num_epochs": num_epochs,
-                    "r": r,
-                    "lora_alpha": lora_alpha,
-                    "lora_dropout": lora_dropout,
-                    "target_modules": {
-                        "q_proj": True,
-                        "k_proj": True,
-                        "v_proj": True,
-                        "o_proj": True,
-                        "gate_proj": True,
-                        "down_proj": True,
-                        "up_proj": True
-                    },
-                    "routing_strategy": routing_strategy,
-                    "group_by_length": False,
+                    "data": eval_data,
+                    "batch_size": lora_config["batch_size"]
                 }
             ]
-        }
-        
-        # Add expert configuration for MixLoRA and LoRAMoE
-        if routing_strategy in ["mixlora", "loramoe"]:
-            config["lora"][0]["num_experts"] = num_experts
-            config["lora"][0]["top_k"] = top_k
-        
-        # Add evaluation configuration
-        if evaluate_steps and evaluate_steps > 0:
-            config["lora"][0]["evaluate_steps"] = evaluate_steps
-            config["lora"][0]["evaluate"] = [
-                {
-                    "name": name,
-                    "task_name": task_name,
-                    "data": f"{dataset}:eval",
-                    "batch_size": batch_size
-                }
-            ]
+        elif evaluate_steps == 0:
+            # Remove evaluation if explicitly set to 0
+            if "evaluate_steps" in lora_config:
+                del lora_config["evaluate_steps"]
+            if "evaluate" in lora_config:
+                del lora_config["evaluate"]
         
         return config
     
-    def save_config(self, config: Dict[str, Any], config_path: str):
+    def save_config(self, config: Dict[str, Any], config_path: str, template_info: str = ""):
         """Save configuration to file"""
-        os.makedirs(os.path.dirname(config_path), exist_ok=True)
+        config_dir = os.path.dirname(config_path)
+        if config_dir:  # Only create directory if there is one
+            os.makedirs(config_dir, exist_ok=True)
         with open(config_path, 'w', encoding='utf-8') as f:
             json.dump(config, f, indent=4)
-        print(f"Configuration saved to: {config_path}")
     
     def run_training(
         self,
@@ -123,7 +235,11 @@ class ArabicFinetuneManager:
         use_tf32: bool = True,
         device: str = None,
         verbose: bool = True,
-        additional_args: list = None
+        additional_args: list = None,
+        wandb_project: str = None,
+        wandb_name: str = None,
+        wandb_tags: list = None,
+        no_wandb: bool = False
     ):
         """Run the training process"""
         
@@ -138,6 +254,20 @@ class ArabicFinetuneManager:
         # Create directories
         os.makedirs(output_dir, exist_ok=True)
         os.makedirs(os.path.dirname(log_file), exist_ok=True)
+        
+        # Copy config file to output directory as training_config.json
+        config_output_path = os.path.join(output_dir, "training_config.json")
+        shutil.copy2(config_path, config_output_path)
+        
+        # Set up wandb environment variables if provided
+        if no_wandb:
+            os.environ["WANDB_DISABLED"] = "true"
+        elif wandb_project and not os.getenv("WANDB_DISABLED"):
+            os.environ["WANDB_PROJECT"] = wandb_project
+        if wandb_name:
+            os.environ["WANDB_NAME"] = wandb_name
+        if wandb_tags:
+            os.environ["WANDB_TAGS"] = ",".join(wandb_tags)
         
         # Build command
         cmd = [
@@ -160,16 +290,9 @@ class ArabicFinetuneManager:
         if additional_args:
             cmd.extend(additional_args)
         
-        print(f"Starting training...")
-        print(f"Command: {' '.join(cmd)}")
-        print(f"Output directory: {output_dir}")
-        print(f"Log file: {log_file}")
-        
         # Run training
         try:
             result = subprocess.run(cmd, check=True, capture_output=False)
-            print(f"Training completed successfully!")
-            print(f"Results saved to: {output_dir}")
             return True
         except subprocess.CalledProcessError as e:
             print(f"Training failed with exit code: {e.returncode}")
@@ -179,23 +302,23 @@ class ArabicFinetuneManager:
 def main():
     parser = argparse.ArgumentParser(description="Arabic Fine-tuning Manager")
     parser.add_argument("--name", type=str, default="arabic_fanar_mixlora", help="Adapter name")
-    parser.add_argument("--task", type=str, default="palmx_culture", help="Task name")
-    parser.add_argument("--dataset", type=str, default="UBC-NLP/palmx_2025_subtask1_culture", help="Dataset name")
+    parser.add_argument("--data", type=str, default="palmx_culture", choices=["palmx_culture", "palmx_ext", "palm_train", "all_datasets"], help="Data source (palmx_culture: HuggingFace dataset with train/eval splits, palmx_ext: Local UAE culture dataset (train only), palm_train: Local general Arabic dataset (train only), all_datasets: All three datasets combined for training)")
+    parser.add_argument("--dataset", type=str, help="Custom dataset name/path (overrides auto-selection from data)")
     parser.add_argument("--model", type=str, default="fanar", choices=["fanar"], help="Base model")
-    parser.add_argument("--routing", type=str, default="mixlora", choices=["mixlora", "loramoe", "lora"], help="Routing strategy")
-    parser.add_argument("--experts", type=int, default=8, help="Number of experts")
-    parser.add_argument("--top_k", type=int, default=2, help="Top-k experts")
-    parser.add_argument("--epochs", type=int, default=3, help="Number of epochs")
-    parser.add_argument("--batch_size", type=int, default=8, help="Batch size")
-    parser.add_argument("--micro_batch_size", type=int, default=4, help="Micro batch size")
-    parser.add_argument("--lr", type=float, default=2e-4, help="Learning rate")
-    parser.add_argument("--r", type=int, default=16, help="LoRA rank")
-    parser.add_argument("--lora_alpha", type=int, default=32, help="LoRA alpha")
-    parser.add_argument("--lora_dropout", type=float, default=0.05, help="LoRA dropout")
-    parser.add_argument("--cutoff_len", type=int, default=512, help="Maximum sequence length")
-    parser.add_argument("--warmup_ratio", type=float, default=0.1, help="Warmup ratio")
-    parser.add_argument("--save_step", type=int, default=500, help="Save checkpoint every N steps")
-    parser.add_argument("--evaluate_steps", type=int, default=100, help="Evaluate every N steps")
+    parser.add_argument("--routing", type=str, default="mixlora", choices=["mixlora", "loramoe", "lora", "mixlora_dynamic", "mola"], help="Routing strategy")
+    parser.add_argument("--experts", type=int, help="Number of experts (uses template default if not specified)")
+    parser.add_argument("--top_k", type=int, help="Top-k experts (uses template default if not specified)")
+    parser.add_argument("--epochs", type=int, help="Number of epochs (uses template default if not specified)")
+    parser.add_argument("--batch_size", type=int, help="Batch size (uses template default if not specified)")
+    parser.add_argument("--micro_batch_size", type=int, help="Micro batch size (uses template default if not specified)")
+    parser.add_argument("--lr", type=float, help="Learning rate (uses template default if not specified)")
+    parser.add_argument("--r", type=int, help="LoRA rank (uses template default if not specified)")
+    parser.add_argument("--lora_alpha", type=int, help="LoRA alpha (uses template default if not specified)")
+    parser.add_argument("--lora_dropout", type=float, help="LoRA dropout (uses template default if not specified)")
+    parser.add_argument("--cutoff_len", type=int, help="Maximum sequence length (uses template default if not specified)")
+    parser.add_argument("--warmup_ratio", type=float, help="Warmup ratio (uses template default if not specified)")
+    parser.add_argument("--save_step", type=int, help="Save checkpoint every N steps (uses template default if not specified)")
+    parser.add_argument("--evaluate_steps", type=int, help="Evaluate every N steps (uses template default if not specified, set to 0 to disable)")
     parser.add_argument("--config_only", action="store_true", help="Only create config file, don't run training")
     parser.add_argument("--config_path", type=str, help="Path to save/load config file")
     parser.add_argument("--use_config", type=str, help="Path to existing config file to use for training (skips config creation)")
@@ -205,6 +328,10 @@ def main():
     parser.add_argument("--no_bf16", action="store_true", help="Disable bfloat16")
     parser.add_argument("--no_tf32", action="store_true", help="Disable tf32")
     parser.add_argument("--quiet", action="store_true", help="Disable verbose output")
+    parser.add_argument("--wandb_project", type=str, help="Wandb project name")
+    parser.add_argument("--wandb_name", type=str, help="Wandb run name")
+    parser.add_argument("--wandb_tags", nargs="+", help="Wandb tags (space-separated)")
+    parser.add_argument("--no_wandb", action="store_true", help="Disable wandb logging")
     
     args = parser.parse_args()
     
@@ -223,7 +350,6 @@ def main():
         try:
             with open(config_path, 'r', encoding='utf-8') as f:
                 config = json.load(f)
-            print(f"Using existing config file: {config_path}")
         except json.JSONDecodeError as e:
             print(f"Error: Invalid JSON in config file: {e}")
             sys.exit(1)
@@ -233,10 +359,19 @@ def main():
             
     else:
         # Create new config
+        # Determine dataset - use custom dataset if provided, otherwise auto-select from data choice
+        dataset_to_use = args.dataset
+        if dataset_to_use is None:
+            if args.data in manager.datasets:
+                dataset_to_use = manager.datasets[args.data]
+            else:
+                dataset_to_use = manager.datasets["palmx_culture"]
+        
         config = manager.create_config(
             name=args.name,
-            task_name=args.task,
-            dataset=args.dataset,
+            task_name="palmx_culture",  # Task is always palmx_culture
+            dataset=dataset_to_use,
+            model=args.model,
             routing_strategy=args.routing,
             num_experts=args.experts,
             top_k=args.top_k,
@@ -263,7 +398,6 @@ def main():
         manager.save_config(config, config_path)
     
     if args.config_only:
-        print("Configuration file created successfully!")
         return
     
     # Get base model
@@ -279,12 +413,13 @@ def main():
         use_tf32=not args.no_tf32,
         device=args.device,
         verbose=not args.quiet,
+        wandb_project=args.wandb_project,
+        wandb_name=args.wandb_name,
+        wandb_tags=args.wandb_tags,
+        no_wandb=args.no_wandb,
     )
     
-    if success:
-        print("Fine-tuning completed successfully!")
-    else:
-        print("Fine-tuning failed!")
+    if not success:
         sys.exit(1)
 
 

@@ -114,19 +114,38 @@ class ArabicMCQTask(CommonSenseTask):
     ) -> List[InputData]:
         """Load and format Arabic MCQ data"""
         
-        # Use provided path or default dataset
-        if path is not None:
-            if ":" in path:
-                # Handle dataset_name:split format
-                dataset_parts = path.split(":")
-                dataset_name = dataset_parts[0]
-                split = dataset_parts[1] if len(dataset_parts) > 1 else self.split
-            else:
-                dataset_name = path
-                split = self.split
+        # Handle multiple datasets separated by semicolons
+        if path is not None and ";" in path:
+            logging.info(f"Loading multiple datasets: {path}")
+            dataset_paths = [p.strip() for p in path.split(";")]
+            all_data: List[InputData] = []
+            
+            for dataset_path in dataset_paths:
+                if dataset_path:  # Skip empty paths
+                    logging.info(f"Loading dataset: {dataset_path}")
+                    dataset_data = self._load_single_dataset(dataset_path, is_train)
+                    all_data.extend(dataset_data)
+                    logging.info(f"Loaded {len(dataset_data)} examples from {dataset_path}")
+            
+            logging.info(f"Total examples loaded from all datasets: {len(all_data)}")
+            return all_data
         else:
-            dataset_name = self.dataset_name
-            split = "train" if is_train else "dev"
+            # Single dataset
+            dataset_path = path if path is not None else self.dataset_name
+            return self._load_single_dataset(dataset_path, is_train)
+    
+    def _load_single_dataset(self, dataset_path: str, is_train: bool = True) -> List[InputData]:
+        """Load data from a single dataset"""
+        
+        # Use provided path or default dataset
+        if ":" in dataset_path:
+            # Handle dataset_name:split format
+            dataset_parts = dataset_path.split(":")
+            dataset_name = dataset_parts[0]
+            split = dataset_parts[1] if len(dataset_parts) > 1 else self.split
+        else:
+            dataset_name = dataset_path
+            split = self.split if hasattr(self, 'split') else ("train" if is_train else "dev")
         
         logging.info(f"Loading Arabic MCQ data from {dataset_name}, split: {split}")
         
