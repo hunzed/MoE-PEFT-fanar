@@ -26,7 +26,11 @@ class ArabicFinetuneManager:
             "palmx_culture": "UBC-NLP/palmx_2025_subtask1_culture",
             "palmx_ext": "./datasets/palmX-ext.jsonl",
             "palm_train": "./datasets/palm_train.jsonl",
+            "nativqa_global": "./datasets/nativqa_global.jsonl",
             "all_datasets": "UBC-NLP/palmx_2025_subtask1_culture:train;./datasets/palmX-ext.jsonl;./datasets/palm_train.jsonl",
+            "all_datasets+nativqa_global": "UBC-NLP/palmx_2025_subtask1_culture:train;./datasets/palmX-ext.jsonl;./datasets/palm_train.jsonl;./datasets/nativqa_global.jsonl",
+            "palmx_culture+palmx_ext": "UBC-NLP/palmx_2025_subtask1_culture:train;./datasets/palmX-ext.jsonl",
+            "palmx_culture+palm_train": "UBC-NLP/palmx_2025_subtask1_culture:train;./datasets/palm_train.jsonl",
         }
         
         self.routing_strategies = ["mixlora", "loramoe", "lora", "mixlora_dynamic", "mola"]
@@ -299,7 +303,7 @@ class ArabicFinetuneManager:
 def main():
     parser = argparse.ArgumentParser(description="Arabic Fine-tuning Manager")
     parser.add_argument("--name", type=str, default="arabic_fanar_mixlora", help="Adapter name")
-    parser.add_argument("--data", type=str, default="palmx_culture", choices=["palmx_culture", "palmx_ext", "palm_train", "all_datasets"], help="Data source (palmx_culture: HuggingFace dataset with train/eval splits, palmx_ext: Local UAE culture dataset (train only), palm_train: Local general Arabic dataset (train only), all_datasets: All three datasets combined for training)")
+    parser.add_argument("--data", type=str, default="palmx_culture", choices=["palmx_culture", "palmx_ext", "palm_train", "all_datasets", "palmx_culture+palmx_ext", "all_datasets+nativqa_global", "palmx_culture+palm_train"], help="Data source (palmx_culture: HuggingFace dataset with train/eval splits, palmx_ext: Local UAE culture dataset (train only), palm_train: Local general Arabic dataset (train only), all_datasets: All three datasets combined for training)")
     parser.add_argument("--dataset", type=str, help="Custom dataset name/path (overrides auto-selection from data)")
     parser.add_argument("--model", type=str, default="fanar", choices=["fanar"], help="Base model")
     parser.add_argument("--routing", type=str, default="mixlora", choices=["mixlora", "loramoe", "lora", "mixlora_dynamic", "mola"], help="Routing strategy")
